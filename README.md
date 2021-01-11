@@ -1,0 +1,2 @@
+# BashLib
+Several bash utilities
