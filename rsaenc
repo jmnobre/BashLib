@@ -1,0 +1,156 @@
+#!/bin/bash
+#
+
+declare SCRIPTPATH
+declare SCRIPT
+declare TAG
+declare VERSION=0.1
+declare STDIN
+declare STDOUT
+declare ERRFILE
+
+if [[ "$0" =~ / ]]; then SCRIPTPATH="${0%/*}"; else SCRIPTPATH="$PWD"; fi
+if [[ ! "$SCRIPTPATH" =~ ^/ ]]; then SCRIPTPATH="$(cd "$SCRIPTPATH"; pwd)"; fi
+
+SCRIPT="${0##*/}"
+TAG="${SCRIPT%.*}"
+ERRFILE="$(mktemp)"
+
+
+function usage( ) {
+    cat - << __EOT
+$(version)
+Utility to encrypt a payload using a public RSA key.
+
+Usage:
+  $SCRIPT --help | --version | [--decrypt] <RSA key> <input file> <output file>
+ 
+  Where:
+    <RSA key>       is the file to the RSA Public Key used to encrypt the file OR to the 
+	                RSA Private Key if --decrypt option is used
+    <input file>    is the file to pack, or - (dash) is the stdin should be used
+    <output file>   is the the encrypted output file or - (dash) if the stdout should be used.
+    -d, --decrypt   used if decrypting the payload
+    --help shouws   this screen
+    --version shows the current version
+    
+__EOT
+}
+
+function version( ) {
+	echo "$SCRIPT, ver. $VERSION"
+}
+
+
+function error( ) {
+	echo -e "*** $1"
+	if [[ ! -z "$2" ]]; then exit $2; fi
+}
+
+function cleanup( ) {
+	if [[ ! -z "$STDIN" ]]; then
+		exec 0<&-
+		exec <&$STDIN
+	fi
+	if [[ ! -z "$STDOUT" ]]; then 
+		exec 1<&-
+		exec >&$STDOUT
+	fi
+	
+	if [[ ! -z "$ERRFILE" ]]; then rm "$ERRFILE"; fi
+}
+
+trap "cleanup" EXIT
+
+declare CMDOPTS=$(getopt -u -o d --long help,version,decrypt -- "$@")
+
+set -- $CMDOPTS
+# 0 = encrypt
+# 1 = decrypt
+# 2 = help
+# 4 = version
+declare -i OPTIONS=0
+
+while true; do
+	case "$1" in
+		-d|--decrypt)
+			OPTIONS=$(( $OPTIONS | 1 ))
+			;;
+			
+		--help)
+			OPTIONS=$(( $OPTIONS | 2 ))
+			;;
+			
+		--version)
+			OPTIONS=$(( $OPTIONS | 4 ))
+			;;
+			
+		--)
+			shift
+			break
+			;;
+			
+		*)
+			error "unknown option: $1" 1
+			;;
+	esac
+	
+	shift
+done
+
+case $OPTIONS in
+	0|1)
+		;;
+		
+	2) 
+		usage
+		exit 0
+		;;
+		
+	4)
+		version
+		exit 0
+		;;
+		
+	*)
+		error "invalid command line -- use $SCRIPT --help for more information" 1
+		;;
+esac
+
+# check input parameters
+if [[ -z "$3" ]] || [[ ! -z "$4" ]]; then error "invalid usage; use $SCRIPT --help for more information" 1; fi
+
+if [[ ! -r "$1" ]]; then error "can't read the RSA key: $1" 2; fi
+
+if [[ "$2" != '-' ]]; then
+	if [[ ! -r "$2" ]]; then error "can't read the input file: $2" 2; fi
+	exec {STDIN}<&0
+	exec 0<&-
+	exec <"$2"
+fi
+
+if [[ "$3" != '-' ]]; then
+	if [[ -e "$3" ]] && [[ ! -w "$3" ]]; then error "can't write the output file: $3" 2; fi
+	exec {STDOUT}>&1
+	exec 1<&-
+	exec >"$3"
+fi
+
+if [[ "$OPTIONS" -eq 0 ]]; then 
+	# generate the encryption key
+	declare KEY=$(openssl rand -hex 64)
+
+	# dump the encrypted key has the 1st 512 bytes of the output
+	echo -n "0: $KEY" | xxd -r -c 64 -g 0 -r | openssl rsautl -encrypt -inkey "$1" -pubin 2>"$ERRFILE" || error "error encrypting with the RSA Public key:\n$(cat $ERRFILE)" 3
+	
+	# encrypt and dump the compressed payload
+	gzip | openssl enc -aes-256-cbc -k "$KEY" -md md5 2>"$ERRFILE" || error "error encrypting the payload: $(cat $ERRFILE)" 3
+else 
+	declare KEY=$(head -c 512 | openssl rsautl -decrypt -inkey "$1" 2> "$ERRFILE" | od -tx1 -A none | tr -d ' \t\r\n'; echo :${PIPESTATUS[*]} )
+	
+	if [[ $(($(echo ${KEY##*:} | tr -d ' ') + 0)) -ne 0 ]]; then error "error retrieving global encryption key:\n$(cat $ERRFILE)" 3; fi
+	
+	openssl enc -d -aes-256-cbc -k "${KEY%:*}" -md md5 2> "$ERRFILE" | gzip -d || error "error decrypting the payload:\n$(cat $ERRFILE)" 3
+fi
+
+exit 0

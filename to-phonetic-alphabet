@@ -1,0 +1,167 @@
+#!/bin/bash
+#
+# This script converts the input from the stdin into its correspondent 
+# phonetic equivalent
+#
+
+declare SCRIPTPATH="$0"
+if [[ "$SCRIPTPATH" =~ / ]]; then
+    if [[ ! "$SCRIPTPATH" =~ ^/ ]]; then SCRIPTPATH="$(cd "${SCRIPTPATH%.*}"; pwd)/${SCRIPTPATH##*/}"; fi
+else
+    SCRIPTPATH="$PWD/$SCRIPTPATH"
+fi
+declare SCRIPTDIR="${SCRIPTPATH%/*}"
+declare SCRIPT="${SCRIPTPATH##*/}"
+declare TAG="${SCRIPT%.*}"
+declare VERSION=0.1
+
+# error <message> [<rc>]
+#
+function error( ) {
+	echo "$TAG: $1">&2
+	if [[ -z "$2" ]]; then return 0; fi
+	echo "$TAG: use --help for more information">&2
+	exit $2
+}
+
+# version
+# Writes the script version on the stdout
+#
+function version( ) {
+    echo "$SCRIPT, ver. $VERSION"
+}
+
+# usage
+# Writes the script usage on the stdout
+#
+function usage( ) {
+    cat - << __EOT
+$(version)
+Convers the ASCII sequence from the stdin to the equivalent NAT phonetic alphabet.
+For symbols, they are converted into their standard ASCII names
+
+Usage:
+    $SCRIPT 
+
+__EOT
+}
+
+# catalog
+# returns the list of charcaters and respective names, alphabetically sorted
+#
+function catalog( ) {
+	(cat - << __EOS
+!	[exclamation-mark]
+"	[double-quote]
+#	[sharp]
+\$	[dolar-sign]
+%	[percentage]
+&	[ampersand]
+'	[single-quote]
+(	[open-parenthesis]
+)	[close-parenthesis]
+*	[asterisk]
++	[plus-sign]
+,	[comma]
+-	[minus-sign]
+.	[dot]
+/	[forward-slash]
+0	zero
+1	one
+2	two
+3	three
+4	four
+5	five
+6	six
+7	seven
+8	eight
+9	nine
+:	[colon]
+;	[semi-colon]
+<	[less-than-sign]
+=	[equal-sign]
+>	[greater-than-sign]
+?	[question-mark]
+@	[at-sign]
+A	ALPHA
+B	BETA
+C	CHARLIE
+D	DELTA
+E	ECHO
+F	FOXTROT
+G	GOLF
+H	HOTEL
+I	INDIA
+J	JULIETT
+K	KILO
+L	LIMA
+M	MIKE
+N	NOVEMBER
+O	OSCAR
+P	PAPA
+Q	QUEBEC
+R	ROMEO
+S	SIERRA
+T	TANGO
+U	UNIFORM
+V	VICTOR
+W	WHISKEY
+X	XRAY
+Y	YANKEE
+Z	ZULO
+[	[open-square-brackets]
+\\	[back-slash]
+]	[close-square-brackets]
+^	[caret-sign]
+_	[underscore]
+\`	[back-quote]
+a	alpha
+b	beta
+c	charlie
+d	delta
+e	echo
+f	foxtrot
+g	golf
+h	hotel
+i	india
+j	juliett
+k	kilo
+l	lima
+m	mike
+n	november
+o	oscar
+p	papa
+q	quebec
+r	romeo
+s	sierra
+t	tango
+u	uniform
+v	victor
+w	whiskey
+x	xray
+y	yankee
+z	zulo
+{	[open-curly-brackets]
+|	[pipe-sign]
+}	[close-curly-brackets]
+~	[tilde]
+__EOS
+) 
+}
+
+declare CMDLINOPTS
+
+CMDLINOPTS=`getopt -o "" -l help,version -n "$TAG" -- "$@"`
+
+if [[ $? -ne 0 ]]; then exit 1; fi
+
+if [[ "$1" == --version ]]; then version; exit 0; fi
+if [[ "$1" == --help ]]; then usage; exit 0; fi
+if [[ ! -z "$1" ]]; then error "unknown option: $1" 1; fi
+
+grep -o . | 
+	cat -n | 
+	sort -k 2 | 
+	join -1 2 -2 1 -o 1.1,2.2 - <(catalog) | 
+	sort -k 1 -n | 
+	awk '(NR==1){printf("%s",$2);next} {printf(" %s",$2)} END{print ""}'
