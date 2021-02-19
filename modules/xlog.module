@@ -47,7 +47,7 @@ function __xlog-write-internal( ) {
 		if [[ "$script" =~ / ]]; then script="$(cd "${script%/*}"; pwd)/${script##*/}"; else script="$PWD/$script"; fi
 	fi
 	
-	printf "%s [%-16s][%d] %s (function \"%s\" on script %s, line %d)\n" "$(TZ=UTC date +'%Y/%m/%d %H:%M:%S.%N' | grep -Po '.{24}')" "$2" "$3" "$1" "$func" "$script" "$line" >> "${__XLOG_CONTEXT[FILE]}"
+	printf "%s [%-16s][%d] %s (function \"%s\" on script %s, line %d)\n" "$(TZ=UTC date +'%Y/%m/%d %H:%M:%S.%N' | grep -Po '.{23}')""Z" "$2" "$3" "$1" "$func" "$script" "$line" >> "${__XLOG_CONTEXT[FILE]}"
 	
 	if [[ ! -z "$4" ]]; then
 		cat "$4" | sed -r 's/^/> /' >> "${__XLOG_CONTEXT[FILE]}"
@@ -124,7 +124,7 @@ function xlog-initialize( ) {
 	__XLOG_CONTEXT[LEVEL]=0
 	__XLOG_CONTEXT[FILE]="$lfname"
 	
-	if [[ $(( $FLAGS & 2 )) -ne 0 ]]; then 
+	if [[ $(( $FLAGS & 2 )) -eq 0 ]]; then 
 		__xlog-write-internal "xlog initialized" INF 0 
 	fi
 }
