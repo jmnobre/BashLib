@@ -1,0 +1,247 @@
+## xlog module
+## 
+## This module provides a set of functions that allow a script to create a structured log file.
+## The log file is a text file, encoded in UTF-8, with the following format:
+##
+## LOGFILE   ::= LOGRECORD+
+## LOGRECORD ::= LOGENTRY EOL (DUMPLINE EOL)*
+## LOGENTRT  ::= TSTAMP ' [' CLASS '][' LEVEL '] ' MESSAGE '(' ANCHOR ')'
+## TSTAMP    ::= YYYY '/' MM '/' DD ' ' hh ':' mm ':' ss '.' nnn
+## CLASS     ::= LETTER ((LETTER|DIGIT|':'){0,14} LETTER)
+## LEVEL     ::= [0-9]
+## MESSAGE   ::= TEXT
+## ANCHOR    ::= '(function ' TEXT ' on script ' PATH ', line: ' [1-9][0-9]* ')'
+## YYYY      ::= '20' [0-9]{2}
+## MM        ::= 0[1-9]|1[0-2]
+## DD        ::= 0[1-9]|[12][0-9]|3[01]
+## hh        ::= [01][0-9]|2[0-3]
+## mm        ::= [0-5][0-9]
+## ss        ::= mm
+## nnn       ::= [0-9]{3}
+## LETTER    ::= [a-zA-Z]
+## DIGIT     ::= [0-9]
+## TEXT      ::= [\x20-\x7e]
+## PATH      ::= <Linux Path>
+## EOL       ::= \x0a
+## DUMPLINE  ::= '> ' TEXT
+##
+## The TEXT is a trimmed, single space text line
+##
+
+# supporting variables
+#   __XLOG_CONTEXT is an hash, with the following keys:
+#		LOGFILE
+#		STATUS
+#		LEVEL
+declare -A __XLOG_CONTEXT
+
+# __xlog-write-internal <message> <type> <level> <dump stream>?
+function __xlog-write-internal( ) {
+	local line
+	local func
+	local script 
+	
+	read line func script < <(echo `caller 1`)
+	
+	if [[ ! "$script" =~ ^/ ]]; then
+		if [[ "$script" =~ / ]]; then script="$(cd "${script%/*}"; pwd)/${script##*/}"; else script="$PWD/$script"; fi
+	fi
+	
+	printf "%s [%-16s][%d] %s (function \"%s\" on script %s, line %d)\n" "$(TZ=UTC date +'%Y/%m/%d %H:%M:%S.%N' | grep -Po '.{24}')" "$2" "$3" "$1" "$func" "$script" "$line" >> "${__XLOG_CONTEXT[FILE]}"
+	
+	if [[ ! -z "$4" ]]; then
+		cat "$4" | sed -r 's/^/> /' >> "${__XLOG_CONTEXT[FILE]}"
+	fi
+}
+
+# xlog-initialize <log file> <flags>*
+function xlog-initialize( ) {
+	local lfname="$1"
+	
+	if [[ -z "$lfname" ]]; then return 1; fi
+	
+	# collect the flags
+	local -A MAP=([force]="1" [silent]="2")
+	local -i FLAGS=0
+	
+	while [[ ! -z "$2" ]]; do
+		local val=${MAP[$2]}
+		
+		if [[ -z "$val" ]]; then return 2; fi
+		let "FLAGS|=$val"
+		shift
+	done
+	
+	if [[ ! -z "${__XLOG_CONTEXT[STATUS]}" ]]; then 
+		if [[ $(( $FLAGS & 1 )) -ne 0 ]]; then xlog-terminate; else return 3; fi
+	fi
+	
+	# does the log file exists?
+	if [[ -a "$lfname" ]]; then
+		# the log file must be a readable/writable regular file
+		if [[ ! -f "$lfname" ]] || [[ ! -r "$lfname" ]] || [[ ! -w "$lfname" ]]; then return 4; fi
+		
+		local -i RC=0
+		
+		# basic file checks
+		if [[ "$(head -c 3 "$lfname" | od -A none -tx1 | tr -d ' \t')" != efbbbf ]]; then 
+			RC=6; 
+		else
+			{ tail -c +4 "$lfname" | 
+				grep -Pn '^((20[0-9]{2})/(0[1-9]|1[0-2])/(0[1-9]|[12][0-9]|3[01]) ([01][0-9]|2[0-3])(:[0-5][0-9]){2}\.[0-9]{3}Z \[[^\]]+\]\[[0-9]\] .* \(function.*\))|(^> .*)$' | 
+				awk -v FS=":" '{if($1!=NR){exit 1}}'; } || RC=7
+		fi
+		
+		if [[ $RC -ne 0 ]]; then 
+			if [[ $(( $FLAGS & 1 )) -eq 0 ]]; then return $RC; fi
+
+			mv "$lfname" "$lfname.$(date +'%Y%m%d%H%M%S')" 2> /dev/null || return 5
+
+			touch "$lfname" 2> /dev/null || return 5
+			printf "\xef\xbb\xbf" > "$lfname"
+		else
+			local EOF=$(tail -c +4 "$lfname" | tail -c 1 | od -A none -tx1 | tr -d ' \t')
+			
+			if [[ ! -z "$EOF" ]] && [[ $EOF != '0a' ]]; then 
+				echo " *** re-synchronizing log file" >> "$lfname"
+			fi
+		fi
+	else
+		touch "$lfname" 2> /dev/null || return 5
+		printf "\xef\xbb\xbf" > "$lfname"
+	fi
+
+	# get the log full path name
+	if [[ ! "$lfname" =~ ^/ ]]; then 
+		if [[ "$lfname" =~ / ]]; then 
+			lfname="$(cd "${lfname%/*}"; pwd)/${lfname##*/}"; 
+		else 
+			lfname="$PWD/$lfname"; 
+		fi
+	fi
+	
+	__XLOG_CONTEXT[STATUS]=0
+	__XLOG_CONTEXT[LEVEL]=0
+	__XLOG_CONTEXT[FILE]="$lfname"
+	
+	if [[ $(( $FLAGS & 2 )) -ne 0 ]]; then 
+		__xlog-write-internal "xlog initialized" INF 0 
+	fi
+}
+
+# xlog-terminate silent?
+function xlog-terminate( ) {
+	if [[ -z "${__XLOG_CONTEXT[STATUS]}" ]]; then return 1; fi
+	
+	if [[ ! -z "$1" ]]; then 
+		if [[ "$1" != 'silent' ]]; then return 2; fi
+	else
+		__xlog-write-internal "xlog terminated" INF 0 
+	fi
+	
+	unset __XLOG_CONTEXT
+	declare -Ag __XLOG_CONTEXT
+}
+
+
+# xlog-get-state
+function xlog-get-state( ) {
+	if [[ -z "${__XLOG_CONTEXT[STATUS]}" ]]; then 
+		echo "uninitialized"
+	elif [[ "${__XLOG_CONTEXT[STATUS]}" -eq 0 ]]; then 
+		echo "enabled"
+	else 
+		echo "disabled"
+	fi
+}
+
+# xlog-get-logfile
+function xlog-get-logfile( ) {
+	if [[ -z "${__XLOG_CONTEXT[STATUS]}" ]]; then return 1; fi
+	
+	echo "${__XLOG_CONTEXT[FILE]}"
+}
+
+
+# xlog-enable silent?
+function xlog-enable( ) {
+	if [[ -z "${__XLOG_CONTEXT[STATUS]}" ]]; then 
+		return 1
+	elif [[ ! -z "$1" ]] && [[ "$1" != silent ]]; then 
+		return 2; 
+	elif [[ ${__XLOG_CONTEXT[STATUS]} -eq 0 ]]; then
+		if [[ -z "$1" ]]; then __xlog-write-internal "xlog is already enabled" WRN 0; fi
+		return 3
+	elif [[ ${__XLOG_CONTEXT[STATUS]} -eq -1 ]]; then 
+		if [[ -z "$1" ]]; then __xlog-write-internal "xlog enabled" INF 0; fi
+	fi
+
+	let "__XLOG_CONTEXT[STATUS]++"
+
+	return 0
+}
+
+# xlog-disable silent?
+function xlog-disable( ) {
+	if [[ -z "${__XLOG_CONTEXT[STATUS]}" ]]; then 
+		return 1
+	elif [[ ! -z "$1" ]] && [[ "$1" != silent ]]; then 
+		return 2; 
+	elif [[ ${__XLOG_CONTEXT[STATUS]} -eq 0 ]]; then
+		if [[ -z "$1" ]]; then __xlog-write-internal "xlog disabled" WRN 0; fi
+	fi
+	
+	let "__XLOG_CONTEXT[STATUS]--"
+	
+	return 0
+}
+
+# xlog-get-level
+function xlog-get-level( ) {
+	if [[ -z "${__XLOG_CONTEXT[STATUS]}" ]]; then return 1; fi
+	
+	echo ${__XLOG_CONTEXT[LEVEL]}
+}
+
+# xlog-set-level <level> silent?
+function xlog-set-level( ) {
+	if [[ -z "${__XLOG_CONTEXT[STATUS]}" ]]; then return 1; fi
+	if [[ ! "$1" =~ ^[0-9]$ ]]; then return 2; fi
+
+	if [[ "$1" -ne ${__XLOG_CONTEXT[LEVEL]} ]]; then
+
+		if [[ "$2" != silent ]]; then __xlog-write-internal "xlog level changed to "$1 INF 0; fi
+	
+		__XLOG_CONTEXT[LEVEL]=$1
+	fi
+}
+
+# xlog-write <message> (<type> (<level> <dump>?)?)?
+function xlog-write( ) {
+	if [[ -z "${__XLOG_CONTEXT[STATUS]}" ]]; then return 1; fi
+
+	# validate arguments
+	if [[ -z "$1" ]]; then return 2; fi
+	
+	local type="${2^^}"
+	
+	if [[ -z "$type" ]]; then 
+		type=INF; 
+	elif [[ ! "$type" =~ ^[A-Z]([A-Z0-9:\-]*[A-Z0-9])?$ ]]; then 
+		return 3
+	fi
+	
+	local level="$3"
+	
+	if [[ -z "$level" ]]; then level=0; elif [[ ! "$level" =~ ^[0-9]$ ]]; then return 4; fi
+	
+	local data="$4"
+
+	if [[ "${__XLOG_CONTEXT[STATUS]}" -eq 0 ]] && [[ $level -le ${__XLOG_CONTEXT[LEVEL]} ]]; then 
+		__xlog-write-internal "$(echo $1)" $type $level "$4"
+	elif [[ ! -z "$4" ]]; then 
+		cat "$4" > /dev/null
+	fi
+	
+	return 0
+}
